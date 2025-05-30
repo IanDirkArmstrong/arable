@@ -185,13 +185,27 @@ class GoogleSheetsClient:
                         f"Project row {i + 1} missing required field: {field}"
                     )
 
-        # Check for duplicate project numbers
+        # Check for duplicate project numbers and handle gracefully
         project_numbers = [str(p["ProjectNumber"]) for p in projects]
         duplicates = [
             num for num in set(project_numbers) if project_numbers.count(num) > 1
         ]
         if duplicates:
-            raise GoogleSheetsError(f"Duplicate project numbers found: {duplicates}")
+            self.logger.warning(f"Duplicate project numbers found: {duplicates}")
+            self.logger.warning("Using the last occurrence of each duplicate project")
+            
+            # Remove duplicates by keeping the last occurrence (most likely the updated version)
+            seen = set()
+            unique_projects = []
+            for project in reversed(projects):  # Reverse to keep last occurrence
+                project_num = str(project["ProjectNumber"])
+                if project_num not in seen:
+                    seen.add(project_num)
+                    unique_projects.append(project)
+            
+            # Restore original order and update the projects list
+            projects[:] = list(reversed(unique_projects))
+            self.logger.info(f"Deduplicated projects: {len(projects)} remaining")
 
         # Check milestones reference valid projects
         if milestones:
