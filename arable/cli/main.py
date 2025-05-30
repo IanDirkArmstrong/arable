@@ -384,6 +384,13 @@ def sync(
     try:
         automation = ProjectAutomation(config)
         
+        # Enable debug logging if requested
+        if debug:
+            logging.getLogger().setLevel(logging.DEBUG)
+            automation.logger.setLevel(logging.DEBUG)
+            automation.monday_api.logger.setLevel(logging.DEBUG)
+            console.print("[dim]Debug logging enabled[/dim]")
+        
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -528,7 +535,8 @@ def sync(
 def dependencies(
     project_number: Optional[str] = typer.Argument(None, help="Specific project number to update dependencies for"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to configuration file"),
-    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what dependencies would be set without making changes")
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what dependencies would be set without making changes"),
+    debug: bool = typer.Option(False, "--debug", "-d", help="Enable debug logging for troubleshooting")
 ):
     """
     Update milestone dependencies in Monday.com based on business logic
