@@ -1,0 +1,72 @@
+# ARABLE Configuration Template
+# Copy to config/config.yaml and customize for your environment
+
+monday:
+  # Your Monday.com API token (use environment variable in production)
+  api_token: "${MONDAY_API_TOKEN}"
+  master_board_id: "your_master_board_id"
+  template_board_id: "your_template_board_id"
+  active_projects_folder_id: "your_folder_id"
+
+  master_columns:
+    project_number: "numbers_column_id"
+    project_milestones: "board_relation_column_id"
+    customer: "lookup_column_id"
+    start_date: "date_column_id"
+    status: "status"
+
+  project_board_columns:
+    timeline: "timerange_column_id"
+    duration: "numeric_column_id"
+    phase: "color_column_id"
+    status: "status"
+    master_link: "board_relation_column_id"
+    rsi_milestone_id: "numeric_column_id"
+    dependencies: "dependency"
+
+google_sheets:
+  credentials_path: "${GOOGLE_SHEETS_CREDENTIALS_PATH}"
+  sheet_name: "${GOOGLE_SHEETS_SHEET_NAME}"
+
+# Generic milestone mappings - customize for your workflow
+milestone_mappings:
+  phase:
+    "Contract Start": 1
+    "Kickoff": 1
+    "Design Review": 0
+    "Procurement": 2
+    "Assembly": 3
+    "Testing": 4
+    "Shipping": 6
+    "Installation": 7
+    "Project Close": 8
+
+  groups:
+    "Contract Start": "topics"
+    "Kickoff": "topics"
+    "Design Review": "engineering_group_id"
+    "Procurement": "purchasing_group_id"
+    "Assembly": "operations_group_id"
+    "Testing": "testing_group_id"
+    "Shipping": "operations_group_id"
+    "Installation": "field_service_group_id"
+    "Project Close": "topics"
+
+  dependencies:
+    workflow_rules:
+      "Kickoff": ["Contract Start"]
+      "Design Review": ["Kickoff"]
+      "Procurement": ["Design Review"]
+      "Assembly": ["Procurement"]
+      "Testing": ["Assembly"]
+      "Shipping": ["Testing"]
+      "Installation": ["Shipping"]
+      "Project Close": ["Installation"]
+
+testing:
+  test_project_number: ""
+  enabled: true
+
+logging:
+  level: "INFO"
+  file: "logs/arable.log"
