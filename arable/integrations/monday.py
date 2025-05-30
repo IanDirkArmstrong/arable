@@ -19,18 +19,24 @@ class MondayAPIError(Exception):
 class MondayAPI:
     """Monday.com API client for project automation"""
 
-    def __init__(self, api_token: str, logger: logging.Logger):
+    def __init__(self, api_token: str, logger: logging.Logger = None):
         """
         Initialize Monday API client
 
         Args:
             api_token: Monday.com API token
-            logger: Logger instance
+            logger: Logger instance (optional)
         """
         self.api_token = api_token
         self.api_url = "https://api.monday.com/v2"
         self.headers = {"Authorization": api_token, "Content-Type": "application/json"}
-        self.logger = logger
+        
+        # Use provided logger or create one with proper name
+        if logger:
+            self.logger = logger
+        else:
+            from ..utils.logger import setup_logger
+            self.logger = setup_logger("arable.integrations.monday")
 
     def make_request(self, query: str, variables: Dict = None) -> Dict:
         """
@@ -417,6 +423,46 @@ class MondayAPI:
                     
         return updated_count
         
+    def get_board_columns(self, board_id: str) -> Dict[str, str]:
+        """
+        Get all columns for a board to help debug column IDs
+        
+        Args:
+            board_id: Monday.com board ID
+            
+        Returns:
+            Dictionary mapping column titles to column IDs
+        """
+        query = """
+        query ($board_id: [ID!]) {
+            boards(ids: $board_id) {
+                columns {
+                    id
+                    title
+                    type
+                }
+            }
+        }
+        """
+        
+        variables = {"board_id": [board_id]}
+        
+        try:
+            result = self.make_request(query, variables)
+            board = result["data"]["boards"][0]
+            
+            columns = {}
+            self.logger.info(f"Board {board_id} columns:")
+            for col in board["columns"]:
+                columns[col["title"]] = col["id"]
+                self.logger.info(f"  {col['title']} ({col['type']}): {col['id']}")
+                
+            return columns
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get board columns: {e}")
+            return {}
+        
     def _update_item_dependencies(
         self, 
         item_id: str, 
@@ -443,17 +489,57 @@ class MondayAPI:
         }
         '''
         
-        # Monday.com expects dependency values as a JSON object
-        value = json.dumps({"item_ids": dependency_item_ids})
+        # Try different Monday.com dependency value formats
+        formats_to_try = [
+            # Format 1: Standard item_ids array
+            json.dumps({"item_ids": dependency_item_ids}),
+            
+            # Format 2: Simple array
+            json.dumps(dependency_item_ids),
+            
+            # Format 3: String of comma-separated IDs
+            ",".join(map(str, dependency_item_ids)),
+            
+            # Format 4: Single item format (if only one dependency)
+            json.dumps({"item_id": dependency_item_ids[0]}) if len(dependency_item_ids) == 1 else None,
+            
+            # Format 5: Array of objects
+            json.dumps([{"id": item_id} for item_id in dependency_item_ids])
+        ]
         
-        variables = {
-            "item_id": int(item_id),
-            "column_id": dependencies_column,
-            "value": value
-        }
+        # Filter out None values
+        formats_to_try = [f for f in formats_to_try if f is not None]
         
-        self.logger.debug(f"Updating dependencies for item {item_id}: {dependency_item_ids}")
-        return self.make_request(query, variables)
+        self.logger.debug(f"Updating dependencies for item {item_id}:")
+        self.logger.debug(f"  Column ID: {dependencies_column}")
+        self.logger.debug(f"  Dependency item IDs: {dependency_item_ids}")
+        
+        last_error = None
+        
+        for i, value_format in enumerate(formats_to_try, 1):
+            self.logger.debug(f"  Trying format {i}: {value_format}")
+            
+            variables = {
+                "item_id": int(item_id),
+                "column_id": dependencies_column,
+                "value": value_format
+            }
+            
+            try:
+                result = self.make_request(query, variables)
+                self.logger.info(f"Dependency update successful with format {i}: {result}")
+                return result
+            except Exception as e:
+                last_error = e
+                self.logger.debug(f"  Format {i} failed: {e}")
+                continue
+        
+        # If all formats failed, log detailed error
+        self.logger.error(f"All dependency formats failed for item {item_id}:")
+        self.logger.error(f"  Last error: {last_error}")
+        self.logger.error(f"  Query: {query}")
+        self.logger.error(f"  Final variables: {variables}")
+        raise last_error
 
     def _build_milestone_column_values(
         self,

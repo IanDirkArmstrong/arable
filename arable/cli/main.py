@@ -21,7 +21,7 @@ import logging
 from ..integrations.monday import MondayAPI, MondayAPIError
 from ..integrations.google_sheets import GoogleSheetsClient, GoogleSheetsError  
 from ..utils.config import load_config, validate_config, ConfigError, create_config_template
-from ..utils.logger import setup_logger
+from ..utils.logger import setup_logger, set_debug_logging
 from ..agents.registry import registry
 from ..agents.orchestrator import orchestrator
 
@@ -47,6 +47,7 @@ class ProjectAutomation:
 
         # Setup logging
         self.logger = setup_logger(
+            name="arable.cli",
             level=self.config.logging["level"], 
             log_file=self.config.logging.get("file")
         )
@@ -55,10 +56,11 @@ class ProjectAutomation:
         self.sheets_client = GoogleSheetsClient(
             self.config.google_sheets.credentials_path,
             self.config.google_sheets.sheet_name,
-            self.logger,
+            logging.getLogger("arable.integrations.sheets"),
         )
 
-        self.monday_api = MondayAPI(self.config.monday.api_token, self.logger)
+        self.monday_api = MondayAPI(self.config.monday.api_token, 
+                                   logging.getLogger("arable.integrations.monday"))
         self.logger.info("arable automation initialized")
 
     def compare_milestone_data(self, sheets_milestones: list, monday_items: list) -> dict:
@@ -384,6 +386,11 @@ def sync(
     try:
         automation = ProjectAutomation(config)
         
+        # Enable debug logging if requested
+        if debug:
+            set_debug_logging()
+            console.print("[dim]Debug logging enabled[/dim]")
+        
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -528,7 +535,8 @@ def sync(
 def dependencies(
     project_number: Optional[str] = typer.Argument(None, help="Specific project number to update dependencies for"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to configuration file"),
-    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what dependencies would be set without making changes")
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what dependencies would be set without making changes"),
+    debug: bool = typer.Option(False, "--debug", "-d", help="Enable debug logging for troubleshooting")
 ):
     """
     Update milestone dependencies in Monday.com based on business logic
@@ -581,6 +589,29 @@ def dependencies(
                     
                     # Get existing Monday items
                     monday_items = automation.monday_api.get_project_board_items(board_id)
+                    
+                    # Debug: Get actual board columns to verify dependency column ID
+                    board_columns = automation.monday_api.get_board_columns(board_id)
+                    dependencies_column_id = automation.config.monday.project_board_columns.get("dependencies")
+                    
+                    if dependencies_column_id not in [col_id for col_id in board_columns.values()]:
+                        console.print(f"[red]⚠️  Dependency column '{dependencies_column_id}' not found in board[/red]")
+                        console.print(f"[yellow]Available columns: {list(board_columns.keys())}[/yellow]")
+                        
+                        # Try to find a dependency-type column
+                        dependency_columns = {title: col_id for title, col_id in board_columns.items() 
+                                            if 'depend' in title.lower() or 'prerequisite' in title.lower()}
+                        
+                        if dependency_columns:
+                            console.print(f"[blue]Found potential dependency columns: {list(dependency_columns.keys())}[/blue]")
+                            # Use the first one found
+                            new_dep_column = list(dependency_columns.values())[0]
+                            console.print(f"[yellow]Trying with column ID: {new_dep_column}[/yellow]")
+                            # Update config temporarily
+                            automation.config.monday.project_board_columns["dependencies"] = new_dep_column
+                        else:
+                            console.print(f"[red]No dependency columns found. Skipping this project.[/red]")
+                            continue
                     
                     # Create lookup of RSi milestone IDs to Monday items
                     rsi_column_id = automation.config.monday.project_board_columns.get("rsi_milestone_id")
