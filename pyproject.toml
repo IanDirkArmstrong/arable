@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "arable"
 version = "0.2.0"
-description = "Agentic Runtime And Business Logic Engine"
+description = "agentic runtime and business logic engine"
 authors = [{name = "Ian Armstrong", email = "ian@wowitsian.com"}]
 readme = "README.md"
 requires-python = ">=3.9"

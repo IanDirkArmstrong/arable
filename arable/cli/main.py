@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ARABLE CLI - Main entry point
-Agentic Runtime And Business Logic Engine
+arable CLI - Main entry point
+agentic runtime and business logic engine
 """
 
 from typing import List, Dict
@@ -27,7 +27,7 @@ from ..agents.orchestrator import orchestrator
 
 app = typer.Typer(
     name="arable",
-    help="[bold blue]ARABLE[/bold blue] - Agentic Runtime And Business Logic Engine",
+    help="[bold blue]arable[/bold blue] - agentic runtime and business logic engine",
     rich_markup_mode="rich"
 )
 
@@ -59,7 +59,7 @@ class ProjectAutomation:
         )
 
         self.monday_api = MondayAPI(self.config.monday.api_token, self.logger)
-        self.logger.info("ARABLE automation initialized")
+        self.logger.info("arable automation initialized")
 
     def compare_milestone_data(self, sheets_milestones: list, monday_items: list) -> dict:
         """
@@ -245,7 +245,7 @@ class ProjectAutomation:
 
     def run(self, test_project_number: Optional[str] = None) -> None:
         """Run the automation workflow"""
-        console.print("[bold blue]🚀 Starting Monday.com Project Automation[/bold blue]")
+        console.print("[bold blue]🚀 Starting arable project automation[/bold blue]")
 
         try:
             with Progress(
@@ -309,9 +309,9 @@ def config():
 
 @app.command()
 def info():
-    """Show ARABLE system information"""
+    """Show arable system information"""
     console.print(Panel(
-        "[bold blue]ARABLE[/bold blue] - Agentic Runtime And Business Logic Engine\n\n"
+        "[bold blue]arable[/bold blue] - agentic runtime and business logic engine\n\n"
         "🤖 Intelligent document extraction\n"
         "🔄 Cross-platform data reconciliation\n"
         "⚡ Agent-driven workflow automation\n"
@@ -745,7 +745,7 @@ def agents(
     workflow_file: Optional[str] = typer.Option(None, "--workflow", "-w", help="Workflow definition file")
 ):
     """
-    Manage and execute ARABLE agents
+    Manage and execute arable agents
     
     Examples:
       arable agents list                           # List all available agents
@@ -765,7 +765,7 @@ def agents(
         
 def _list_agents():
     """List all registered agents"""
-    console.print("[bold blue]🤖 ARABLE Agents[/bold blue]")
+    console.print("[bold blue]🤖 arable agents[/bold blue]")
     
     # Auto-discover agents first
     discovered_count = registry.auto_discover_agents()
@@ -872,11 +872,11 @@ def _run_workflow(workflow_file: Optional[str]):
 @app.command()
 def demo():
     """
-    Run ARABLE agent demonstrations
+    Run arable agent demonstrations
     
     Shows the hybrid CLI-agent system in action with sample data
     """
-    console.print("[bold blue]🎬 ARABLE Agent Demo[/bold blue]")
+    console.print("[bold blue]🎬 arable agent demo[/bold blue]")
     
     # Auto-discover agents
     registry.auto_discover_agents()

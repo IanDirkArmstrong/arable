@@ -1,5 +1,5 @@
 """
-ARABLE - Agentic Runtime And Business Logic Engine
+arable - agentic runtime and business logic engine
 """
 
 __version__ = "0.2.0"

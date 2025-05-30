@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# ARABLE Git Setup Script
+# arable git setup script
 # This script moves the project out of Google Drive and sets up git safely
 
 set -e
 
-echo "🔧 Setting up ARABLE for Git and GitHub..."
+echo "🔧 Setting up arable for Git and GitHub..."
 
 # Create local development directory
 LOCAL_DIR="$HOME/Development/ARABLE"
@@ -51,7 +51,7 @@ git config user.email "ian@wowitsian.com"
 git add .
 
 # Create initial commit
-git commit -m "Initial commit: ARABLE multi-agent system
+git commit -m "Initial commit: arable multi-agent system
 
 - Complete CLI implementation with Rich UI  
 - Agent infrastructure with registry, orchestrator, memory
@@ -65,7 +65,7 @@ git commit -m "Initial commit: ARABLE multi-agent system
 🏗️ Ready for: GitHub setup and team collaboration"
 
 echo ""
-echo "✅ ARABLE successfully moved to: $LOCAL_DIR"
+echo "✅ arable successfully moved to: $LOCAL_DIR"
 echo "✅ Git repository initialized"
 echo "✅ All sensitive data removed"
 echo ""
