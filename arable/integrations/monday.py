@@ -338,88 +338,138 @@ class MondayAPI:
         column_mapping: Dict[str, str]
     ) -> int:
         """
-        Update dependencies for all milestones after they've been created
+        Update dependencies using hybrid logic: workflow rules + date awareness
         
-        This is a two-pass approach:
-        1. Create all milestone items first
-        2. Update dependencies based on created item IDs
+        Strategy:
+        1. Try workflow rules first for semantic dependencies
+        2. Validate dates - skip if predecessor starts after dependent
+        3. Fall back to chronological logic when no workflow rules match
+        4. Handle multiple milestones of same type intelligently
         
         Args:
             board_id: Monday.com board ID
-            milestones: List of milestones with Monday item IDs
-            dependency_rules: Dependency rules from configuration
+            milestones: List of milestones with Monday item IDs and dates
+            dependency_rules: Workflow rules from configuration
             column_mapping: Column mappings including dependencies
             
         Returns:
             Number of dependencies updated
         """
-        workflow_rules = dependency_rules.get("workflow_rules", {})
         dependencies_column = column_mapping.get("dependencies")
         
         if not dependencies_column:
             self.logger.warning("No dependencies column configured")
             return 0
             
-        # Create lookup of milestone types to Monday item IDs
-        milestone_lookup = {}
+        # Parse milestone dates and create enhanced milestone data
+        milestones_with_dates = []
         for milestone in milestones:
             milestone_type = milestone.get("MileStoneType")
             monday_item_id = milestone.get("monday_item_id")
-            if milestone_type and monday_item_id:
-                milestone_lookup[milestone_type] = monday_item_id
+            start_date_str = milestone.get("DateOfMilestone")
+            
+            if not (milestone_type and monday_item_id and start_date_str):
+                continue
                 
+            # Parse start date
+            try:
+                start_date = parse_date(str(start_date_str))
+                milestones_with_dates.append({
+                    "milestone_type": milestone_type,
+                    "monday_item_id": monday_item_id,
+                    "start_date": start_date,
+                    "start_date_str": start_date_str,
+                    "original_milestone": milestone
+                })
+            except Exception as e:
+                self.logger.warning(f"Could not parse date for {milestone_type}: {start_date_str}")
+                continue
+        
+        # Sort by start date for fallback logic
+        milestones_with_dates.sort(key=lambda x: x["start_date"])
+        
+        # Create lookup for workflow rule matching
+        milestone_lookup = {}
+        for m in milestones_with_dates:
+            milestone_type = m["milestone_type"]
+            if milestone_type not in milestone_lookup:
+                milestone_lookup[milestone_type] = []
+            milestone_lookup[milestone_type].append(m)
+        
+        self.logger.info(f"Processing {len(milestones_with_dates)} milestones with hybrid dependency logic")
+        
+        workflow_rules = dependency_rules.get("workflow_rules", {})
+        critical_path = dependency_rules.get("critical_path", {})
         updated_count = 0
         
-        # Update dependencies for each milestone
-        for milestone in milestones:
-            current_type = milestone.get("MileStoneType")
-            current_item_id = milestone.get("monday_item_id")
+        # Process each milestone
+        for current_milestone in milestones_with_dates:
+            current_type = current_milestone["milestone_type"]
+            current_start = current_milestone["start_date"]
+            current_item_id = current_milestone["monday_item_id"]
             
-            if not current_type or not current_item_id:
-                continue
+            dependency_set = False
             
-            # Get available milestone types in this project
-            available_milestone_types = {m.get("MileStoneType") for m in milestones if m.get("MileStoneType")}
-            
-            # Try workflow rules first (flexible chains)
-            workflow_rules = dependency_rules.get("workflow_rules", {})
+            # Strategy 1: Try workflow rules first
             dependency_candidates = workflow_rules.get(current_type, [])
+            if not dependency_candidates:
+                dependency_candidates = critical_path.get(current_type, [])
             
-            # Find the first available dependency from the chain
-            selected_dependency = None
-            for candidate in dependency_candidates:
-                if candidate in milestone_lookup and candidate != current_type:
-                    selected_dependency = candidate
-                    break  # Take the first (most preferred) available dependency
+            if dependency_candidates:
+                for candidate_type in dependency_candidates:
+                    if candidate_type in milestone_lookup:
+                        # Find the best candidate of this type (latest that starts before current)
+                        valid_candidates = []
+                        for candidate in milestone_lookup[candidate_type]:
+                            if candidate["start_date"] < current_start:
+                                valid_candidates.append(candidate)
+                        
+                        if valid_candidates:
+                            # Use the latest valid candidate (closest predecessor by date)
+                            best_candidate = max(valid_candidates, key=lambda x: x["start_date"])
+                            
+                            self.logger.info(
+                                f"Workflow rule: {current_type} ({current_milestone['start_date_str']}) → "
+                                f"{candidate_type} ({best_candidate['start_date_str']})"
+                            )
+                            
+                            try:
+                                self._update_item_dependencies(
+                                    current_item_id, 
+                                    dependencies_column, 
+                                    [int(best_candidate["monday_item_id"])], 
+                                    board_id
+                                )
+                                updated_count += 1
+                                dependency_set = True
+                                break  # Found a valid workflow dependency
+                            except Exception as e:
+                                self.logger.warning(f"Failed to set workflow dependency: {e}")
+            
+            # Strategy 2: Fallback to chronological logic if no workflow rules worked
+            if not dependency_set:
+                # Find immediate chronological predecessor
+                current_index = milestones_with_dates.index(current_milestone)
+                if current_index > 0:
+                    predecessor = milestones_with_dates[current_index - 1]
                     
-            # If no workflow dependencies found, try critical path fallback
-            if not selected_dependency:
-                critical_path = dependency_rules.get("critical_path", {})
-                critical_candidates = critical_path.get(current_type, [])
-                
-                for candidate in critical_candidates:
-                    if candidate in milestone_lookup and candidate != current_type:
-                        selected_dependency = candidate
-                        break
-            
-            # Set the dependency if found
-            if selected_dependency:
-                dependency_item_ids = [int(milestone_lookup[selected_dependency])]
-                
-                self.logger.info(
-                    f"Setting flexible dependency for {current_type}: {selected_dependency}"
-                )
-                
-                # Update the Monday item with dependencies
-                try:
-                    self._update_item_dependencies(
-                        current_item_id, dependencies_column, dependency_item_ids
+                    self.logger.info(
+                        f"Chronological fallback: {current_type} ({current_milestone['start_date_str']}) → "
+                        f"{predecessor['milestone_type']} ({predecessor['start_date_str']})"
                     )
-                    updated_count += 1
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to update dependencies for {current_type}: {e}"
-                    )
+                    
+                    try:
+                        self._update_item_dependencies(
+                            current_item_id, 
+                            dependencies_column, 
+                            [int(predecessor["monday_item_id"])], 
+                            board_id
+                        )
+                        updated_count += 1
+                    except Exception as e:
+                        self.logger.warning(f"Failed to set chronological dependency: {e}")
+                else:
+                    self.logger.info(f"First milestone {current_type} - no dependencies")
                     
         return updated_count
         
@@ -440,6 +490,7 @@ class MondayAPI:
                     id
                     title
                     type
+                    settings_str
                 }
             }
         }
@@ -455,7 +506,12 @@ class MondayAPI:
             self.logger.info(f"Board {board_id} columns:")
             for col in board["columns"]:
                 columns[col["title"]] = col["id"]
-                self.logger.info(f"  {col['title']} ({col['type']}): {col['id']}")
+                settings = col.get("settings_str", "")
+                self.logger.info(f"  {col['title']} ({col['type']}): {col['id']} | Settings: {settings}")
+                
+                # Check if this is a dependency-type column
+                if col["type"] == "dependency" or "depend" in col["title"].lower():
+                    self.logger.info(f"    → Potential dependency column found!")
                 
             return columns
             
@@ -467,17 +523,75 @@ class MondayAPI:
         self, 
         item_id: str, 
         dependencies_column: str, 
-        dependency_item_ids: List[int]
+        dependency_item_ids: List[int],
+        board_id: str = None
     ) -> None:
         """
-        Update dependencies for a specific Monday item
+        Update dependencies for a specific Monday item - trying board_id approach
         
         Args:
             item_id: Monday.com item ID
-            dependencies_column: Dependencies column ID
+            dependencies_column: Dependencies column ID  
             dependency_item_ids: List of item IDs this item depends on
         """
-        query = '''
+        
+        self.logger.info(f"Setting dependencies for item {item_id} -> {dependency_item_ids}")
+        
+        # Use the provided board_id if available, otherwise try to get it from the item
+        if not board_id:
+            board_id = self._get_board_id_for_item(item_id)
+        
+        self.logger.debug(f"Using board_id: {board_id} for dependency update")
+        
+        query_with_board = '''
+        mutation ($board_id: ID!, $item_id: ID!, $column_id: String!, $value: JSON!) {
+          change_column_value(
+            board_id: $board_id,
+            item_id: $item_id,
+            column_id: $column_id,
+            value: $value
+          ) {
+            id
+          }
+        }
+        '''
+        
+        # Try the most common dependency formats with board_id
+        formats_to_try = [
+            {"item_ids": dependency_item_ids},
+            [str(dep_id) for dep_id in dependency_item_ids],
+            dependency_item_ids,
+            {"item_ids": [str(dep_id) for dep_id in dependency_item_ids]},
+        ]
+        
+        for i, value_format in enumerate(formats_to_try, 1):
+            self.logger.debug(f"Trying dependency format {i} with board_id: {value_format}")
+            
+            value_json = json.dumps(value_format)
+            
+            variables = {
+                "board_id": str(board_id) if board_id else None,
+                "item_id": str(item_id),
+                "column_id": dependencies_column,
+                "value": value_json
+            }
+            
+            # Skip if we don't have board_id
+            if not board_id:
+                continue
+                
+            try:
+                result = self.make_request(query_with_board, variables)
+                self.logger.info(f"✅ Dependency format {i} with board_id successful!")
+                return result
+            except Exception as e:
+                self.logger.debug(f"❌ Format {i} with board_id failed: {e}")
+                continue
+        
+        # If board_id approach failed, try the original approach without board_id
+        self.logger.debug("Trying without board_id...")
+        
+        query_without_board = '''
         mutation ($item_id: Int!, $column_id: String!, $value: JSON!) {
           change_column_value(
             item_id: $item_id,
@@ -489,57 +603,55 @@ class MondayAPI:
         }
         '''
         
-        # Try different Monday.com dependency value formats
-        formats_to_try = [
-            # Format 1: Standard item_ids array
-            json.dumps({"item_ids": dependency_item_ids}),
-            
-            # Format 2: Simple array
-            json.dumps(dependency_item_ids),
-            
-            # Format 3: String of comma-separated IDs
-            ",".join(map(str, dependency_item_ids)),
-            
-            # Format 4: Single item format (if only one dependency)
-            json.dumps({"item_id": dependency_item_ids[0]}) if len(dependency_item_ids) == 1 else None,
-            
-            # Format 5: Array of objects
-            json.dumps([{"id": item_id} for item_id in dependency_item_ids])
-        ]
-        
-        # Filter out None values
-        formats_to_try = [f for f in formats_to_try if f is not None]
-        
-        self.logger.debug(f"Updating dependencies for item {item_id}:")
-        self.logger.debug(f"  Column ID: {dependencies_column}")
-        self.logger.debug(f"  Dependency item IDs: {dependency_item_ids}")
-        
-        last_error = None
-        
         for i, value_format in enumerate(formats_to_try, 1):
-            self.logger.debug(f"  Trying format {i}: {value_format}")
+            value_json = json.dumps(value_format)
             
             variables = {
                 "item_id": int(item_id),
                 "column_id": dependencies_column,
-                "value": value_format
+                "value": value_json
             }
             
             try:
-                result = self.make_request(query, variables)
-                self.logger.info(f"Dependency update successful with format {i}: {result}")
+                result = self.make_request(query_without_board, variables)
+                self.logger.info(f"✅ Dependency format {i} without board_id successful!")
                 return result
             except Exception as e:
-                last_error = e
-                self.logger.debug(f"  Format {i} failed: {e}")
+                self.logger.debug(f"❌ Format {i} without board_id failed: {e}")
                 continue
         
-        # If all formats failed, log detailed error
-        self.logger.error(f"All dependency formats failed for item {item_id}:")
-        self.logger.error(f"  Last error: {last_error}")
-        self.logger.error(f"  Query: {query}")
-        self.logger.error(f"  Final variables: {variables}")
-        raise last_error
+        # If nothing worked, log the error details
+        self.logger.error(f"All dependency formats failed for item {item_id}")
+        self.logger.error(f"Board ID: {board_id}")
+        self.logger.error(f"Column ID: {dependencies_column}")
+        self.logger.error(f"Dependency IDs: {dependency_item_ids}")
+        
+        raise Exception(f"Unable to set dependencies for item {item_id} using any known format")
+    
+    def _get_board_id_for_item(self, item_id: str) -> Optional[str]:
+        """Get the board ID for a specific item"""
+        query = '''
+        query ($item_id: [ID!]) {
+          items(ids: $item_id) {
+            board {
+              id
+            }
+          }
+        }
+        '''
+        
+        variables = {"item_id": [str(item_id)]}
+        
+        try:
+            result = self.make_request(query, variables)
+            if result["data"]["items"]:
+                board_id = result["data"]["items"][0]["board"]["id"]
+                self.logger.debug(f"Found board ID {board_id} for item {item_id}")
+                return board_id
+            return None
+        except Exception as e:
+            self.logger.debug(f"Could not get board ID for item {item_id}: {e}")
+            return None
 
     def _build_milestone_column_values(
         self,

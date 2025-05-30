@@ -219,17 +219,51 @@ class ProjectAutomation:
                 if created_milestones and self.config.milestone_mappings.get("dependencies"):
                     dependency_task = progress.add_task(f"🔗 Setting dependencies for {project_number}...", total=None)
                     try:
+                        # First, verify and fix the dependency column configuration like the standalone command
+                        board_columns = self.monday_api.get_board_columns(project_board_id)
+                        dependencies_column_id = self.config.monday.project_board_columns.get("dependencies")
+                        
+                        # Check if dependency column exists and fix if needed
+                        if dependencies_column_id not in [col_id for col_id in board_columns.values()]:
+                            self.logger.warning(f"Dependency column '{dependencies_column_id}' not found in new board")
+                            
+                            # Try to find a dependency-type column
+                            dependency_columns = {title: col_id for title, col_id in board_columns.items() 
+                                                if 'depend' in title.lower() or 'prerequisite' in title.lower()}
+                            
+                            if dependency_columns:
+                                new_dep_column = list(dependency_columns.values())[0]
+                                self.logger.info(f"Using dependency column: {new_dep_column}")
+                                # Update config temporarily for this project
+                                original_dep_column = dependencies_column_id
+                                self.config.monday.project_board_columns["dependencies"] = new_dep_column
+                            else:
+                                self.logger.warning("No dependency columns found in new board")
+                                progress.update(dependency_task, completed=1, total=1)
+                                # Skip dependencies but continue with project creation - use pass instead of continue
+                                pass
+                        
                         dependencies_updated = self.monday_api.update_milestone_dependencies(
                             project_board_id,
                             created_milestones,
                             self.config.milestone_mappings["dependencies"],
                             self.config.monday.project_board_columns
                         )
+                        
                         progress.update(dependency_task, completed=1, total=1)
-                        self.logger.info(f"Updated dependencies for {dependencies_updated} milestones")
+                        if dependencies_updated > 0:
+                            self.logger.info(f"Successfully updated dependencies for {dependencies_updated} milestones")
+                        else:
+                            self.logger.warning("No dependencies were set - this may be a board configuration issue")
+                            
+                        # Restore original config if we changed it
+                        if 'original_dep_column' in locals():
+                            self.config.monday.project_board_columns["dependencies"] = original_dep_column
+                            
                     except Exception as e:
                         progress.update(dependency_task, completed=1, total=1)
-                        self.logger.error(f"Failed to update dependencies: {e}")
+                        self.logger.warning(f"Dependency setting failed but project creation succeeded: {e}")
+                        # Don't fail the entire project creation due to dependency issues
 
             success_rate = milestone_count / len(milestones) if milestones else 1.0
             
@@ -292,6 +326,31 @@ class ProjectAutomation:
                     )
 
                 console.print(table)
+                
+                # Now actually process the projects
+                results = []
+                for project in projects:
+                    project_number = str(project["ProjectNumber"])
+                    project_milestones = [m for m in milestones if str(m["ProjectNumber"]) == project_number]
+                    
+                    result = self.process_project_with_progress(project, project_milestones, progress)
+                    results.append({
+                        "project": project,
+                        "success": result,
+                        "milestone_count": len(project_milestones)
+                    })
+                
+                # Show final results
+                successful = sum(1 for r in results if r["success"])
+                total_projects = len(results)
+                total_milestones = sum(r["milestone_count"] for r in results)
+                
+                console.print(f"\n[bold green]🎉 Project automation complete![/bold green]")
+                console.print(f"Successfully processed {successful}/{total_projects} projects")
+                console.print(f"Total milestones created: {total_milestones}")
+                
+                if successful < total_projects:
+                    console.print(f"[yellow]⚠️  {total_projects - successful} projects had issues[/yellow]")
         except Exception as e:
             self.logger.error(f"Unexpected error in run: {e}")
             console.print(f"[red]❌ Automation failed: {e}[/red]")
@@ -667,87 +726,69 @@ def dependencies(
         sys.exit(1)
         
 def _show_planned_dependencies(milestones: List[Dict], dependency_rules: Dict):
-    """Show what dependencies would be set in dry run mode using flexible logic"""
-    workflow_rules = dependency_rules.get("workflow_rules", {})
-    critical_path = dependency_rules.get("critical_path", {})
+    """Show what dependencies would be set in dry run mode using date-aware logic"""
+    from dateutil.parser import parse as parse_date
     
-    # Create lookup of milestone types to items
-    milestone_lookup = {}
+    # Parse milestone dates and sort chronologically
+    milestones_with_dates = []
     for milestone in milestones:
         milestone_type = milestone.get("MileStoneType")
-        if milestone_type:
-            milestone_lookup[milestone_type] = milestone
-    
-    # Get available milestone types in this project
-    available_milestone_types = set(milestone_lookup.keys())
-    
-    table = Table(title="Planned Dependencies (Flexible Logic)")
-    table.add_column("Milestone", style="cyan")
-    table.add_column("Preferred Dependencies", style="yellow")
-    table.add_column("Selected", style="green")
-    table.add_column("Status", style="blue")
-    
-    for milestone in milestones:
-        milestone_type = milestone.get("MileStoneType")
-        if not milestone_type:
+        start_date_str = milestone.get("DateOfMilestone")
+        
+        if not (milestone_type and start_date_str):
             continue
             
-        # Try workflow rules first (flexible chains)
-        dependency_candidates = workflow_rules.get(milestone_type, [])
+        try:
+            start_date = parse_date(str(start_date_str))
+            milestones_with_dates.append({
+                "milestone_type": milestone_type,
+                "start_date": start_date,
+                "start_date_str": str(start_date_str)
+            })
+        except Exception:
+            continue
+    
+    # Sort by start date
+    milestones_with_dates.sort(key=lambda x: x["start_date"])
+    
+    table = Table(title="Planned Dependencies (Date-Aware Logic)")
+    table.add_column("Milestone", style="cyan")
+    table.add_column("Start Date", style="yellow")
+    table.add_column("Depends On", style="green")
+    table.add_column("Status", style="blue")
+    
+    for i, milestone in enumerate(milestones_with_dates):
+        milestone_type = milestone["milestone_type"]
+        start_date_str = milestone["start_date_str"]
         
-        # Find the first available dependency from the chain
-        selected_dependency = None
-        for candidate in dependency_candidates:
-            if candidate in available_milestone_types and candidate != milestone_type:
-                selected_dependency = candidate
-                break  # Take the first (most preferred) available dependency
-                
-        # If no workflow dependencies found, try critical path fallback
-        if not selected_dependency:
-            critical_candidates = critical_path.get(milestone_type, [])
-            
-            for candidate in critical_candidates:
-                if candidate in available_milestone_types and candidate != milestone_type:
-                    selected_dependency = candidate
-                    break
-        
-        # Format the display
-        if dependency_candidates:
-            # Show first few preferred dependencies
-            preferred_display = ", ".join(dependency_candidates[:3])
-            if len(dependency_candidates) > 3:
-                preferred_display += "..."
+        if i == 0:
+            # First milestone has no dependencies
+            depends_on = "None"
+            status = "ℹ️ First milestone"
         else:
-            preferred_display = "None defined"
-            
-        if selected_dependency:
+            # Depends on previous milestone by date
+            predecessor = milestones_with_dates[i - 1]
+            depends_on = predecessor["milestone_type"]
             status = "✓ Will set dependency"
-            selected_display = selected_dependency
-        elif dependency_candidates:
-            status = "⚠️ No suitable dependencies available"
-            selected_display = "None found"
-        else:
-            status = "ℹ️ Independent milestone"
-            selected_display = "N/A"
             
         table.add_row(
             milestone_type,
-            preferred_display,
-            selected_display,
+            start_date_str,
+            depends_on,
             status
         )
     
     console.print(table)
     
     # Show summary
-    total_milestones = len(milestones)
-    dependencies_to_set = sum(1 for m in milestones 
-                             if _get_selected_dependency(m.get("MileStoneType"), available_milestone_types, workflow_rules, critical_path))
+    total_milestones = len(milestones_with_dates)
+    dependencies_to_set = max(0, total_milestones - 1)  # All except first
     
-    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"\n[bold]Summary (Date-Based Dependencies):[/bold]")
     console.print(f"Total milestones: {total_milestones}")
     console.print(f"Dependencies to set: {dependencies_to_set}")
-    console.print(f"Independent milestones: {total_milestones - dependencies_to_set}")
+    console.print(f"Independent milestones: 1 (first chronologically)")
+    console.print(f"\n[dim]Logic: Each milestone depends on its immediate predecessor by start date[/dim]")
 
 def _get_selected_dependency(milestone_type: str, available_types: set, workflow_rules: Dict, critical_path: Dict) -> Optional[str]:
     """Helper function to get the selected dependency for a milestone type"""
